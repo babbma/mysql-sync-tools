@@ -631,7 +631,7 @@ db-sync-tools/
 
 - 📖 [完整文档](docs/) - 详细的使用文档
 - 🔍 [使用示例](docs/EXAMPLES.md) - 10+ 个实际场景
-- 🐛 [问题反馈](https://github.com/yourusername/db-sync-tools/issues) - 提交 Bug 或建议
+- 🐛 [问题反馈](https://github.com/babbma/mysql-sync-tools/issues) - 提交 Bug 或建议
 
 ## 🤝 贡献指南
 
@@ -649,15 +649,15 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ## 💬 联系方式
 
-- 📧 Email: your.email@example.com
-- 🐛 Issues: https://github.com/yourusername/db-sync-tools/issues
-- 💡 Discussions: https://github.com/yourusername/db-sync-tools/discussions
+- 📧 Email: cn.chunhua.zhang@qq.com
+- 🐛 Issues: https://github.com/babbma/mysql-sync-tools/issues
+- 💡 Discussions: https://github.com/babbma/mysql-sync-tools/discussions
 
 ## ⭐ 如果这个项目对你有帮助，请给个 Star！
 
 ---
 
 **最后更新**: 2025-11-04  
-**版本**: v1.0.2  
+**版本**: v1.0.0  
 **状态**: ✅ 稳定版，生产可用
 
