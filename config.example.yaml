@@ -1,0 +1,40 @@
+# MySQL数据库同步工具配置文件
+
+# 源数据库配置
+source:
+  url: "127.0.0.1:3306/source_db"  # 格式: host:port/database 或 host/database
+  username: "root"
+  password: "source_password"
+
+# 目标数据库配置
+target:
+  url: "127.0.0.1:3306/target_db"  # 格式: host:port/database 或 host/database
+  username: "root"
+  password: "target_password"
+
+# 同步配置
+sync:
+  # 每批次处理的记录数（受带宽限制）
+  batch_size: 200
+  # 是否在同步前清空目标表
+  truncate_before_sync: false
+  # 要排除的表（可选）
+  exclude_tables:
+    - "tmp_*"
+    - "temp_*"
+  # 只同步指定的表（如果为空则同步所有表）
+  include_tables: []
+  # 同步超时时间（秒）
+  timeout: 3600
+  # 是否显示详细日志
+  verbose: true
+
+# 日志配置
+log:
+  # 日志级别: debug, info, warn, error
+  level: "info"
+  # 日志文件路径（如果为空则只输出到控制台）
+  file: "logs/sync.log"
+  # 是否输出到控制台
+  console: true
+
