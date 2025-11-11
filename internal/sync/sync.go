@@ -330,6 +330,31 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 			objType = "视图"
 		}
 		logger.Info("元数据 -> %s: %s, 列数: %d, 行数: %d", objType, meta.Name, len(meta.Columns), meta.RowCount)
+		// 展示表结构关键信息（列名与类型、主键）
+		if len(meta.Columns) > 0 {
+			maxCols := 10
+			if len(meta.Columns) < maxCols {
+				maxCols = len(meta.Columns)
+			}
+			colPairs := make([]string, 0, maxCols)
+			for i := 0; i < maxCols; i++ {
+				c := meta.Columns[i]
+				colPairs = append(colPairs, fmt.Sprintf("%s %s", c.Field, c.Type))
+			}
+			if len(meta.Columns) > maxCols {
+				colPairs = append(colPairs, "...")
+			}
+			logger.Info("表结构(前%d列): %s", maxCols, strings.Join(colPairs, ", "))
+		}
+		if len(meta.PrimaryKey) > 0 {
+			logger.Info("主键: %v", meta.PrimaryKey)
+		}
+		// 展示建表语句/视图定义
+		if meta.IsView {
+			logger.Info("视图定义: %s", meta.CreateSQL)
+		} else {
+			logger.Info("建表SQL: %s", meta.CreateSQL)
+		}
 
 		// 更新总行数
 		mu.Lock()
