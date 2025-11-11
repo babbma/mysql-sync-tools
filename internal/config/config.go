@@ -11,10 +11,11 @@ import (
 
 // Config 主配置结构
 type Config struct {
-	Source DatabaseConfig `yaml:"source"`
-	Target DatabaseConfig `yaml:"target"`
-	Sync   SyncConfig     `yaml:"sync"`
-	Log    LogConfig      `yaml:"log"`
+	// 多数据源集合，key 为数据源别名
+	DataSources map[string]DatabaseConfig `yaml:"datasources"`
+	// 同步与日志配置
+	Sync SyncConfig `yaml:"sync"`
+	Log  LogConfig  `yaml:"log"`
 }
 
 // DatabaseConfig 数据库配置
@@ -26,7 +27,11 @@ type DatabaseConfig struct {
 
 // SyncConfig 同步配置
 type SyncConfig struct {
+	// 使用别名指定源与目标数据源
+	SourceAlias        string   `yaml:"source"`
+	TargetAlias        string   `yaml:"target"`
 	BatchSize          int      `yaml:"batch_size"`
+	Concurrency        int      `yaml:"concurrency"`
 	TruncateBeforeSync bool     `yaml:"truncate_before_sync"`
 	ExcludeTables      []string `yaml:"exclude_tables"`
 	IncludeTables      []string `yaml:"include_tables"`
@@ -65,22 +70,37 @@ func Load(configPath string) (*Config, error) {
 
 // Validate 验证配置的有效性
 func (c *Config) Validate() error {
-	// 验证源数据库配置
-	if err := c.Source.Validate("源数据库"); err != nil {
-		return err
+	// 校验数据源集合
+	if len(c.DataSources) == 0 {
+		return fmt.Errorf("必须配置至少一个数据源(datasources)")
 	}
-
-	// 验证目标数据库配置
-	if err := c.Target.Validate("目标数据库"); err != nil {
-		return err
+	for alias, ds := range c.DataSources {
+		if err := ds.Validate(fmt.Sprintf("数据源[%s]", alias)); err != nil {
+			return err
+		}
 	}
 
 	// 验证同步配置
 	if c.Sync.BatchSize <= 0 {
 		return fmt.Errorf("批量大小必须大于0")
 	}
+	if c.Sync.Concurrency <= 0 {
+		c.Sync.Concurrency = 1
+	}
 	if c.Sync.Timeout <= 0 {
 		c.Sync.Timeout = 3600 // 默认1小时
+	}
+	if c.Sync.SourceAlias == "" {
+		return fmt.Errorf("sync.source 不能为空（源数据源别名）")
+	}
+	if c.Sync.TargetAlias == "" {
+		return fmt.Errorf("sync.target 不能为空（目标数据源别名）")
+	}
+	if _, ok := c.DataSources[c.Sync.SourceAlias]; !ok {
+		return fmt.Errorf("未找到源数据源别名: %s", c.Sync.SourceAlias)
+	}
+	if _, ok := c.DataSources[c.Sync.TargetAlias]; !ok {
+		return fmt.Errorf("未找到目标数据源别名: %s", c.Sync.TargetAlias)
 	}
 
 	return nil
@@ -139,6 +159,22 @@ func LoadOrDefault(configPath string) (*Config, error) {
 	}
 
 	return Load(configPath)
+}
+
+// GetSourceConfig 返回源数据源配置
+func (c *Config) GetSourceConfig() *DatabaseConfig {
+	if ds, ok := c.DataSources[c.Sync.SourceAlias]; ok {
+		return &ds
+	}
+	return nil
+}
+
+// GetTargetConfig 返回目标数据源配置
+func (c *Config) GetTargetConfig() *DatabaseConfig {
+	if ds, ok := c.DataSources[c.Sync.TargetAlias]; ok {
+		return &ds
+	}
+	return nil
 }
 
 // GetAbsPath 获取相对于配置文件的绝对路径

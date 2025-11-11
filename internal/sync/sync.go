@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	syncstd "sync"
+
 	"github.com/db-sync-tools/internal/database"
 	"github.com/db-sync-tools/internal/logger"
 	"github.com/db-sync-tools/internal/metadata"
@@ -18,21 +20,53 @@ type Syncer struct {
 	batchSize          int
 	truncateBeforeSync bool
 	timeout            time.Duration
+	maxConcurrency     int
+}
+
+// DecideObjectType 根据元数据判断对象类型（用于测试与分支决策）
+func DecideObjectType(meta *metadata.TableMetadata) string {
+	if meta != nil && meta.IsView {
+		return "view"
+	}
+	return "table"
 }
 
 // NewSyncer 创建同步器
-func NewSyncer(sourceDB, targetDB *database.DB, batchSize int, truncateBeforeSync bool, timeout int) *Syncer {
+func NewSyncer(sourceDB, targetDB *database.DB, batchSize int, truncateBeforeSync bool, timeout int, concurrency int) *Syncer {
 	return &Syncer{
 		sourceDB:           sourceDB,
 		targetDB:           targetDB,
 		batchSize:          batchSize,
 		truncateBeforeSync: truncateBeforeSync,
 		timeout:            time.Duration(timeout) * time.Second,
+		maxConcurrency:     concurrency,
 	}
 }
 
 // SyncTable 同步单个表
 func (s *Syncer) SyncTable(ctx context.Context, meta *metadata.TableMetadata) error {
+	if DecideObjectType(meta) == "view" {
+		logger.Info("开始同步视图: %s", meta.Name)
+		// 视图：在目标端创建/替换视图定义，不做数据写入
+		exists, err := s.targetDB.TableExists(meta.Name)
+		if err != nil {
+			return fmt.Errorf("检查目标视图是否存在失败: %w", err)
+		}
+		// 对于视图，先尝试删除
+		if exists {
+			logger.Info("目标存在对象 %s，尝试删除以重建视图", meta.Name)
+			if _, err := s.targetDB.Exec(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", meta.Name)); err != nil {
+				return fmt.Errorf("删除目标视图失败: %w", err)
+			}
+		}
+		// 元数据的 CreateSQL 为 SHOW CREATE VIEW 的结果，需要确保可直接执行
+		if _, err := s.targetDB.Exec(meta.CreateSQL); err != nil {
+			return fmt.Errorf("创建视图失败: %w", err)
+		}
+		logger.Info("视图 %s 同步完成", meta.Name)
+		return nil
+	}
+
 	logger.Info("开始同步表: %s (总行数: %d)", meta.Name, meta.RowCount)
 
 	// 检查目标表是否存在
@@ -258,10 +292,16 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 	logger.Info("总表数: %d", len(tables))
 	logger.Info("==============================")
 
-	// 首先收集所有表的元数据和总行数
-	var tableMetas []*metadata.TableMetadata
+	// 并发控制
+	if s.maxConcurrency <= 0 {
+		s.maxConcurrency = 1
+	}
+	sem := make(chan struct{}, s.maxConcurrency)
+	var wg syncstd.WaitGroup
+	var mu syncstd.Mutex
+
 	for _, tableName := range tables {
-		// 检查上下文是否已取消
+		// 上下文取消检查
 		select {
 		case <-ctx.Done():
 			logger.Warn("收集元数据过程被取消")
@@ -272,58 +312,50 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 		meta, err := metaManager.GetTableMetadata(tableName)
 		if err != nil {
 			logger.Error("获取表 %s 的元数据失败: %v", tableName, err)
+			mu.Lock()
 			stats.FailedTables++
 			stats.FailedDetails = append(stats.FailedDetails, FailedTableInfo{
 				TableName: tableName,
 				Error:     err.Error(),
 			})
+			mu.Unlock()
 			continue
-		} else {
-			logger.Info("获取表 %s 的元数据成功", tableName)
-			logger.Info("表名: %s", meta.Name)
-			logger.Info("行数: %d", meta.RowCount)
-			logger.Info("列数: %d", len(meta.Columns))
-			logger.Info("主键: %v", meta.PrimaryKey)
-			logger.Info("建表SQL: %s", meta.CreateSQL)
 		}
-		tableMetas = append(tableMetas, meta)
+
+		// 累计总行数
+		mu.Lock()
 		stats.TotalRows += meta.RowCount
+		mu.Unlock()
+
+		// 限流并发执行
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(m *metadata.TableMetadata) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// 创建带超时的上下文
+			tableCtx, cancel := context.WithTimeout(ctx, s.timeout)
+			defer cancel()
+
+			err := s.SyncTable(tableCtx, m)
+			mu.Lock()
+			if err != nil {
+				logger.Error("同步对象 %s 失败: %v", m.Name, err)
+				stats.FailedTables++
+				stats.FailedDetails = append(stats.FailedDetails, FailedTableInfo{
+					TableName: m.Name,
+					Error:     err.Error(),
+				})
+			} else {
+				stats.SyncedTables++
+				stats.SyncedRows += m.RowCount
+			}
+			mu.Unlock()
+		}(meta)
 	}
 
-	logger.Info("总数据行数: %d", stats.TotalRows)
-
-	// 逐个同步表
-	for i, meta := range tableMetas {
-		// 检查上下文是否已取消
-		select {
-		case <-ctx.Done():
-			logger.Warn("同步过程被取消")
-			stats.EndTime = time.Now()
-			stats.Duration = stats.EndTime.Sub(stats.StartTime)
-			return stats, nil
-		default:
-		}
-
-		logger.Info("正在同步第 %d/%d 个表...", i+1, len(tableMetas))
-
-		// 创建带超时的上下文
-		tableCtx, cancel := context.WithTimeout(ctx, s.timeout)
-
-		err := s.SyncTable(tableCtx, meta)
-		cancel() // 及时释放资源
-
-		if err != nil {
-			logger.Error("同步表 %s 失败: %v", meta.Name, err)
-			stats.FailedTables++
-			stats.FailedDetails = append(stats.FailedDetails, FailedTableInfo{
-				TableName: meta.Name,
-				Error:     err.Error(),
-			})
-		} else {
-			stats.SyncedTables++
-			stats.SyncedRows += meta.RowCount
-		}
-	}
+	wg.Wait()
 
 	stats.EndTime = time.Now()
 	stats.Duration = stats.EndTime.Sub(stats.StartTime)

@@ -16,6 +16,7 @@ type TableMetadata struct {
 	Columns    []database.ColumnInfo
 	PrimaryKey []string
 	CreateSQL  string
+	IsView     bool
 }
 
 // MetadataManager 元数据管理器
@@ -67,12 +68,19 @@ func (m *MetadataManager) GetTableMetadata(tableName string) (*TableMetadata, er
 		Name: tableName,
 	}
 
-	// 获取行数
-	rowCount, err := m.sourceDB.GetRowCount(tableName)
-	if err != nil {
-		return nil, fmt.Errorf("获取表行数失败: %w", err)
+	// 判断是否为视图
+	if tableType, err := m.sourceDB.GetTableType(tableName); err == nil && strings.EqualFold(tableType, "VIEW") {
+		metadata.IsView = true
 	}
-	metadata.RowCount = rowCount
+
+	// 获取行数（视图不统计）
+	if !metadata.IsView {
+		rowCount, err := m.sourceDB.GetRowCount(tableName)
+		if err != nil {
+			return nil, fmt.Errorf("获取表行数失败: %w", err)
+		}
+		metadata.RowCount = rowCount
+	}
 
 	// 获取列信息
 	columns, err := m.sourceDB.GetTableColumns(tableName)
@@ -81,21 +89,31 @@ func (m *MetadataManager) GetTableMetadata(tableName string) (*TableMetadata, er
 	}
 	metadata.Columns = columns
 
-	// 获取主键
-	primaryKey, err := m.sourceDB.GetPrimaryKey(tableName)
-	if err != nil {
-		logger.Warn("获取表 %s 的主键失败: %v", tableName, err)
+	// 获取主键（视图无主键）
+	if !metadata.IsView {
+		primaryKey, err := m.sourceDB.GetPrimaryKey(tableName)
+		if err != nil {
+			logger.Warn("获取表 %s 的主键失败: %v", tableName, err)
+		}
+		metadata.PrimaryKey = primaryKey
 	}
-	metadata.PrimaryKey = primaryKey
 
-	// 获取建表SQL（如果失败则使用列信息生成简单的建表语句）
-	createSQL, err := m.sourceDB.GetCreateTableSQL(tableName)
-	if err != nil {
-		logger.Warn("获取表 %s 的建表SQL失败: %v，将使用列信息自动生成", tableName, err)
-		// 生成简单的建表SQL
-		createSQL = m.generateCreateTableSQL(tableName, columns)
+	// 获取创建SQL
+	if metadata.IsView {
+		viewSQL, err := m.sourceDB.GetCreateViewSQL(tableName)
+		if err != nil {
+			return nil, fmt.Errorf("获取视图定义失败: %w", err)
+		}
+		metadata.CreateSQL = viewSQL
+	} else {
+		createSQL, err := m.sourceDB.GetCreateTableSQL(tableName)
+		if err != nil {
+			logger.Warn("获取表 %s 的建表SQL失败: %v，将使用列信息自动生成", tableName, err)
+			// 生成简单的建表SQL
+			createSQL = m.generateCreateTableSQL(tableName, columns)
+		}
+		metadata.CreateSQL = createSQL
 	}
-	metadata.CreateSQL = createSQL
 
 	return metadata, nil
 }

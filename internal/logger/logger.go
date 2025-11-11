@@ -5,7 +5,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +43,9 @@ type Logger struct {
 	fileLogger *log.Logger
 	consLogger *log.Logger
 	file       *os.File
+	logPath    string     // 主日志文件路径（固定名称）
+	currentDay string     // 当前日志日期（YYYY-MM-DD）
+	mu         sync.Mutex // 保护轮转与写入
 	useColor   bool
 }
 
@@ -52,6 +57,7 @@ func Init(levelStr string, logFile string, console bool) error {
 
 	logger := &Logger{
 		level:    level,
+		logPath:  logFile,
 		useColor: console,
 	}
 
@@ -62,12 +68,18 @@ func Init(levelStr string, logFile string, console bool) error {
 
 	// 设置文件日志
 	if logFile != "" {
+		// 确保目录存在
+		if dir := filepath.Dir(logFile); dir != "" && dir != "." {
+			_ = os.MkdirAll(dir, 0o755)
+		}
 		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
 			return fmt.Errorf("无法打开日志文件: %w", err)
 		}
 		logger.file = file
 		logger.fileLogger = log.New(file, "", 0)
+		// 初始化当前日期
+		logger.currentDay = time.Now().Format("2006-01-02")
 	}
 
 	defaultLogger = logger
@@ -97,6 +109,62 @@ func parseLevel(levelStr string) Level {
 	}
 }
 
+// rotateIfNeeded 按日期轮转日志：当日期变化时将主日志重命名为带日期文件，并重新打开主日志
+func (l *Logger) rotateIfNeeded(now time.Time) {
+	if l.fileLogger == nil || l.logPath == "" {
+		return
+	}
+	day := now.Format("2006-01-02")
+	if day == l.currentDay {
+		return
+	}
+	// 加锁保护轮转
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// 双重检查
+	if day == l.currentDay {
+		return
+	}
+
+	// 关闭当前文件
+	if l.file != nil {
+		_ = l.file.Close()
+	}
+
+	// 生成备份文件名
+	ext := filepath.Ext(l.logPath)
+	base := strings.TrimSuffix(filepath.Base(l.logPath), ext)
+	dir := filepath.Dir(l.logPath)
+	if ext == "" {
+		ext = ".log"
+	}
+	backup := filepath.Join(dir, fmt.Sprintf("%s.%s%s", base, l.currentDay, ext))
+
+	// 如果备份文件已存在，附加时间避免覆盖
+	if _, err := os.Stat(backup); err == nil {
+		backup = filepath.Join(dir, fmt.Sprintf("%s.%s-%s%s", base, l.currentDay, now.Format("150405"), ext))
+	}
+
+	// 将主日志重命名为备份
+	_ = os.Rename(l.logPath, backup)
+
+	// 重新打开主日志
+	if dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	file, err := os.OpenFile(l.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		// 发生异常时，回退到仅控制台输出
+		l.file = nil
+		l.fileLogger = nil
+		l.currentDay = day
+		return
+	}
+	l.file = file
+	l.fileLogger = log.New(file, "", 0)
+	l.currentDay = day
+}
+
 // log 记录日志
 func (l *Logger) log(level Level, format string, args ...interface{}) {
 	if level < l.level {
@@ -104,6 +172,9 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 	}
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	// 检查是否需要按日期轮转
+	l.rotateIfNeeded(time.Now())
+
 	levelName := levelNames[level]
 	message := fmt.Sprintf(format, args...)
 
@@ -122,7 +193,10 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 	// 文件输出（不带颜色）
 	if l.fileLogger != nil {
 		fileMsg := fmt.Sprintf("%s [%s] %s", timestamp, levelName, message)
+		// 文件写入加锁，避免与轮转并发
+		l.mu.Lock()
 		l.fileLogger.Println(fileMsg)
+		l.mu.Unlock()
 	}
 }
 
@@ -173,3 +247,9 @@ func GetWriter() io.Writer {
 	return os.Stdout
 }
 
+// TestSetCurrentDay 测试辅助：设置当前日志日期（仅用于单元测试）
+func TestSetCurrentDay(day string) {
+	if defaultLogger != nil {
+		defaultLogger.currentDay = day
+	}
+}

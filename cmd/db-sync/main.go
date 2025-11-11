@@ -61,12 +61,23 @@ func main() {
 }
 
 func run(cfg *config.Config) error {
+	// 解析别名对应的数据源配置
+	srcCfg := cfg.GetSourceConfig()
+	tgtCfg := cfg.GetTargetConfig()
+	if srcCfg == nil {
+		return fmt.Errorf("未找到源数据源配置: %s", cfg.Sync.SourceAlias)
+	}
+	if tgtCfg == nil {
+		return fmt.Errorf("未找到目标数据源配置: %s", cfg.Sync.TargetAlias)
+	}
+
 	// 连接源数据库
-	logger.Info("连接源数据库: %s@%s",
-		cfg.Source.Username,
-		cfg.Source.URL,
+	logger.Info("连接源数据库(%s): %s@%s",
+		cfg.Sync.SourceAlias,
+		srcCfg.Username,
+		srcCfg.URL,
 	)
-	sourceDB, err := database.Connect(&cfg.Source)
+	sourceDB, err := database.Connect(srcCfg)
 	if err != nil {
 		return fmt.Errorf("连接源数据库失败: %w", err)
 	}
@@ -74,11 +85,12 @@ func run(cfg *config.Config) error {
 	logger.Info("源数据库连接成功")
 
 	// 连接目标数据库
-	logger.Info("连接目标数据库: %s@%s",
-		cfg.Target.Username,
-		cfg.Target.URL,
+	logger.Info("连接目标数据库(%s): %s@%s",
+		cfg.Sync.TargetAlias,
+		tgtCfg.Username,
+		tgtCfg.URL,
 	)
-	targetDB, err := database.Connect(&cfg.Target)
+	targetDB, err := database.Connect(tgtCfg)
 	if err != nil {
 		return fmt.Errorf("连接目标数据库失败: %w", err)
 	}
@@ -110,6 +122,7 @@ func run(cfg *config.Config) error {
 		cfg.Sync.BatchSize,
 		cfg.Sync.TruncateBeforeSync,
 		cfg.Sync.Timeout,
+		cfg.Sync.Concurrency,
 	)
 
 	// 设置信号处理（支持优雅退出）

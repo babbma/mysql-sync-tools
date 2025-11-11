@@ -43,7 +43,7 @@ func Connect(cfg *config.DatabaseConfig) (*DB, error) {
 
 // GetTables 获取所有表名
 func (db *DB) GetTables() ([]string, error) {
-	query := "SHOW TABLES"
+	query := "SHOW FULL TABLES"
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("查询表列表失败: %w", err)
@@ -52,8 +52,8 @@ func (db *DB) GetTables() ([]string, error) {
 
 	var tables []string
 	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
+		var tableName, tableType string
+		if err := rows.Scan(&tableName, &tableType); err != nil {
 			return nil, fmt.Errorf("扫描表名失败: %w", err)
 		}
 		tables = append(tables, tableName)
@@ -64,6 +64,17 @@ func (db *DB) GetTables() ([]string, error) {
 	}
 
 	return tables, nil
+}
+
+// GetTableType 获取对象类型（BASE TABLE / VIEW / SYSTEM VIEW 等）
+func (db *DB) GetTableType(tableName string) (string, error) {
+	query := "SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+	var tableType string
+	err := db.QueryRow(query, tableName).Scan(&tableType)
+	if err != nil {
+		return "", fmt.Errorf("查询对象类型失败: %w", err)
+	}
+	return tableType, nil
 }
 
 // GetTableColumns 获取表的列信息
@@ -242,6 +253,45 @@ func (db *DB) GetCreateTableSQL(tableName string) (string, error) {
 	}
 
 	return createSQL, nil
+}
+
+// GetCreateViewSQL 获取创建视图SQL
+func (db *DB) GetCreateViewSQL(viewName string) (string, error) {
+	query := fmt.Sprintf("SHOW CREATE VIEW `%s`", viewName)
+	rows, err := db.Query(query)
+	if err != nil {
+		return "", fmt.Errorf("查询视图定义失败: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return "", fmt.Errorf("未找到视图 %s 的定义", viewName)
+	}
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", fmt.Errorf("获取列信息失败: %w", err)
+	}
+	values := make([]interface{}, len(columns))
+	ptrs := make([]interface{}, len(columns))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		return "", fmt.Errorf("扫描视图定义失败: %w", err)
+	}
+	// 定义通常在第2列
+	if len(values) < 2 {
+		return "", fmt.Errorf("返回列数不足: %d", len(values))
+	}
+	switch v := values[1].(type) {
+	case []byte:
+		return string(v), nil
+	case string:
+		return v, nil
+	default:
+		return "", fmt.Errorf("无法解析视图定义，类型: %T", values[1])
+	}
 }
 
 // ColumnInfo 列信息

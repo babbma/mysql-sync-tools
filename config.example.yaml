@@ -1,21 +1,25 @@
 # MySQL数据库同步工具配置文件
 
-# 源数据库配置
-source:
-  url: "127.0.0.1:3306/source_db"  # 格式: host:port/database 或 host/database
-  username: "root"
-  password: "source_password"
-
-# 目标数据库配置
-target:
-  url: "127.0.0.1:3306/target_db"  # 格式: host:port/database 或 host/database
-  username: "root"
-  password: "target_password"
+# 数据源集合（可配置多个数据源，通过别名引用）
+datasources:
+  dev:
+    url: "127.0.0.1:3306/dev_db"      # 格式: host:port/database
+    username: "root"
+    password: "dev_password"
+  prod:
+    url: "192.168.1.100:3306/prod_db"
+    username: "root"
+    password: "prod_password"
 
 # 同步配置
 sync:
+  # 指定使用哪些数据源（别名）
+  source: "prod"                      # 源数据源别名
+  target: "dev"                       # 目标数据源别名
   # 每批次处理的记录数（受带宽限制）
   batch_size: 200
+  # 并发同步的最大表数（>=1，建议 1-8 之间）
+  concurrency: 1
   # 是否在同步前清空目标表
   truncate_before_sync: false
   # 要排除的表（可选）
