@@ -292,7 +292,7 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 	logger.Info("总表数: %d", len(tables))
 	logger.Info("==============================")
 
-	// 并发控制
+	// 并发限流器与同步器（流水线：读取一个，启动一个）
 	if s.maxConcurrency <= 0 {
 		s.maxConcurrency = 1
 	}
@@ -300,8 +300,10 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 	var wg syncstd.WaitGroup
 	var mu syncstd.Mutex
 
+	// 流水线阶段：边读元数据边启动同步
+	logger.Info("开始读取表/视图结构并启动并发同步（并发度=%d）", s.maxConcurrency)
 	for _, tableName := range tables {
-		// 上下文取消检查
+		// 取消检查
 		select {
 		case <-ctx.Done():
 			logger.Warn("收集元数据过程被取消")
@@ -311,7 +313,7 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 
 		meta, err := metaManager.GetTableMetadata(tableName)
 		if err != nil {
-			logger.Error("获取表 %s 的元数据失败: %v", tableName, err)
+			logger.Error("获取对象 %s 的元数据失败: %v", tableName, err)
 			mu.Lock()
 			stats.FailedTables++
 			stats.FailedDetails = append(stats.FailedDetails, FailedTableInfo{
@@ -322,19 +324,25 @@ func (s *Syncer) SyncAll(ctx context.Context, tables []string, metaManager *meta
 			continue
 		}
 
-		// 累计总行数
+		// 元数据日志
+		objType := "表"
+		if meta.IsView {
+			objType = "视图"
+		}
+		logger.Info("元数据 -> %s: %s, 列数: %d, 行数: %d", objType, meta.Name, len(meta.Columns), meta.RowCount)
+
+		// 更新总行数
 		mu.Lock()
 		stats.TotalRows += meta.RowCount
 		mu.Unlock()
 
-		// 限流并发执行
+		// 启动并发同步
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(m *metadata.TableMetadata) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			// 创建带超时的上下文
 			tableCtx, cancel := context.WithTimeout(ctx, s.timeout)
 			defer cancel()
 
